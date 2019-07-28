@@ -11,11 +11,13 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import datasets
 from torch.autograd import Variable
+from lr_scheduler import *
 from model import *
 from dataset import *
-from lr_scheduler import *
-from cvtransforms import *
 
+import tensorboardX
+import tensorflow as tf
+from tensorboardX import SummaryWriter
 
 SEED = 1
 torch.manual_seed(SEED)
@@ -69,19 +71,7 @@ def train_test(model, dset_loaders, criterion, epoch, phase, optimizer, args, lo
     running_loss, running_corrects, running_all = 0., 0., 0.
 
     for batch_idx, (inputs, targets) in enumerate(dset_loaders[phase]):
-        if phase == 'train':
-            batch_img = RandomCrop(inputs.numpy(), (88, 88))
-            batch_img = ColorNormalize(batch_img)
-            batch_img = HorizontalFlip(batch_img)
-        elif phase == 'val' or phase == 'test':
-            batch_img = CenterCrop(inputs.numpy(), (88, 88))
-            batch_img = ColorNormalize(batch_img)
-        else:
-            raise Exception('the dataset doesn\'t exist')
-
-        batch_img = np.reshape(batch_img, (batch_img.shape[0], batch_img.shape[1], batch_img.shape[2], batch_img.shape[3], 1))
-        inputs = torch.from_numpy(batch_img)
-        inputs = inputs.float().permute(0, 4, 1, 2, 3)
+        inputs = inputs.float()
         if use_gpu:
             if phase == 'train':
                 inputs, targets = Variable(inputs.cuda()), Variable(targets.cuda())
@@ -93,9 +83,19 @@ def train_test(model, dset_loaders, criterion, epoch, phase, optimizer, args, lo
             if phase == 'val' or phase == 'test':
                 inputs, targets = Variable(inputs, volatile=True), Variable(targets)
         outputs = model(inputs)
+        #print('outputs1:', outputs, outputs.size())
         if args.every_frame:
             outputs = torch.mean(outputs, 1)
+        #print('outputs2:', outputs, outputs.size())
+        #print('outputs and targets:', outputs.size(), targets.size())
+        loss = criterion(outputs, targets)
+        #print('loss:', loss)
         _, preds = torch.max(F.softmax(outputs, dim=1).data, 1)
+        #print('preds:', preds)
+        #print('targets.data:', targets.data)
+        corrects = torch.sum(preds == targets.data)
+        #print('corrects:', corrects)
+        #print('outputs and targets:', outputs.size(), targets.size())
         loss = criterion(outputs, targets)
         if phase == 'train':
             optimizer.zero_grad()
@@ -104,7 +104,11 @@ def train_test(model, dset_loaders, criterion, epoch, phase, optimizer, args, lo
         # stastics
         running_loss += loss.data[0] * inputs.size(0)
         running_corrects += torch.sum(preds == targets.data)
+        #print('running_corrects:', running_corrects)
         running_all += len(inputs)
+        #print('running_all:', running_all)
+        running_corrects1 = running_corrects.cpu()
+        #print('Acc:', running_corrects1.numpy() / running_all)
         if batch_idx == 0:
             since = time.time()
         elif batch_idx % args.interval == 0 or (batch_idx == len(dset_loaders[phase])-1):
@@ -113,7 +117,7 @@ def train_test(model, dset_loaders, criterion, epoch, phase, optimizer, args, lo
                 len(dset_loaders[phase].dataset),
                 100. * batch_idx / (len(dset_loaders[phase])-1),
                 running_loss / running_all,
-                running_corrects / running_all,
+                running_corrects1.numpy() / running_all,
                 time.time()-since,
                 (time.time()-since)*(len(dset_loaders[phase])-1) / batch_idx - (time.time()-since))),
     print
@@ -150,7 +154,7 @@ def test_adam(args, use_gpu):
     console.setLevel(logging.INFO)
     logger.addHandler(console)
 
-    model = lipreading(mode=args.mode, inputDim=256, hiddenDim=512, nClasses=args.nClasses, frameLen=29, every_frame=args.every_frame)
+    model = lipreading(mode=args.mode, inputDim=512, hiddenDim=512, nClasses=args.nClasses, frameLen=29, every_frame=args.every_frame)
     # reload model
     model = reload_model(model, logger, args.path)
     # define loss function and optimizer
@@ -174,7 +178,7 @@ def test_adam(args, use_gpu):
         train_test(model, dset_loaders, criterion, 0, 'val', optimizer, args, logger, use_gpu, save_path)
         train_test(model, dset_loaders, criterion, 0, 'test', optimizer, args, logger, use_gpu, save_path)
         return
-    for epoch in xrange(args.epochs):
+    for epoch in range(args.epochs):
         scheduler.step(epoch)
         model = train_test(model, dset_loaders, criterion, epoch, 'train', optimizer, args, logger, use_gpu, save_path)
         train_test(model, dset_loaders, criterion, epoch, 'val', optimizer, args, logger, use_gpu, save_path)
@@ -182,14 +186,14 @@ def test_adam(args, use_gpu):
 
 def main():
     # Settings
-    parser = argparse.ArgumentParser(description='Pytorch Video-only BBC-LRW Example')
+    parser = argparse.ArgumentParser(description='Pytorch Audio-only BBC-LRW Example')
     parser.add_argument('--nClasses', default=500, type=int, help='the number of classes')
     parser.add_argument('--path', default='', help='path to model')
     parser.add_argument('--dataset', default='', help='path to dataset')
     parser.add_argument('--mode', default='temporalConv', help='temporalConv, backendGRU, finetuneGRU')
     parser.add_argument('--every-frame', default=False, action='store_true', help='predicition based on every frame')
     parser.add_argument('--lr', default=0.0003, type=float, help='initial learning rate')
-    parser.add_argument('--batch-size', default=36, type=int, help='mini-batch size (default: 36)')
+    parser.add_argument('--batch_size', default=36, type=int, help='mini-batch size (default: 36)')
     parser.add_argument('--workers', default=4, type=int, help='number of data loading workers (default: 4)')
     parser.add_argument('--epochs', default=30, type=int, help='number of total epochs')
     parser.add_argument('--interval', default=10, type=int, help='display interval')
